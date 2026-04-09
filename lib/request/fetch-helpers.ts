@@ -7,7 +7,7 @@ import type { Auth } from "@opencode-ai/sdk";
 import type { OpencodeClient } from "@opencode-ai/sdk";
 import { refreshAccessToken } from "../auth/auth.js";
 import { logRequest } from "../logger.js";
-import { getCodexInstructions, getModelFamily } from "../prompts/codex.js";
+import { getModelFamily } from "../prompts/codex.js";
 import { transformRequestBody, normalizeModel } from "./request-transformer.js";
 import { convertSseToJson, ensureContentType } from "./response-handler.js";
 import type { UserConfig, RequestBody } from "../types.js";
@@ -127,15 +127,10 @@ export async function transformRequestForCodex(
 			body: body as unknown as Record<string, unknown>,
 		});
 
-		// Fetch model-specific Codex instructions (cached per model family)
-		const codexInstructions = await getCodexInstructions(normalizedModel);
-
 		// Transform request body
 		const transformedBody = await transformRequestBody(
 			body,
-			codexInstructions,
 			userConfig,
-			codexMode,
 		);
 
 		// Log transformed request

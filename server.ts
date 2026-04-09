@@ -2,11 +2,9 @@ import { serve } from "@hono/node-server";
 import { Hono } from "hono";
 import { decodeJWT, refreshAccessToken } from "./lib/auth/auth.js";
 import { CODEX_BASE_URL, JWT_CLAIM_PATH, OPENAI_HEADERS, OPENAI_HEADER_VALUES } from "./lib/constants.js";
-import { getCodexInstructions } from "./lib/prompts/codex.js";
 import { transformRequestBody, normalizeModel } from "./lib/request/request-transformer.js";
 import { convertSseToJson, ensureContentType } from "./lib/request/response-handler.js";
 import { rewriteUrlForCodex, createCodexHeaders, handleErrorResponse, handleSuccessResponse } from "./lib/request/fetch-helpers.js";
-import { loadPluginConfig, getCodexMode } from "./lib/config.js";
 import type { UserConfig, RequestBody } from "./lib/types.js";
 
 // --- Token state ---
@@ -99,9 +97,6 @@ async function getValidToken(): Promise<TokenState> {
 // --- App ---
 const app = new Hono();
 
-const pluginConfig = loadPluginConfig();
-const codexMode = getCodexMode(pluginConfig);
-
 // Request logging middleware
 app.use("*", async (c, next) => {
   const start = Date.now();
@@ -122,18 +117,7 @@ app.post("/v1/responses", async (c) => {
   const isStreaming = body.stream === true;
   console.log(`  model: ${body.model} | stream: ${isStreaming} | tools: ${body.tools?.length ?? 0}`);
 
-  // Normalize model and get instructions
-  const normalizedModel = normalizeModel(body.model);
-  const codexInstructions = await getCodexInstructions(normalizedModel);
-
-  const userConfig: UserConfig = { global: {}, models: {} };
-
-  const transformedBody = await transformRequestBody(
-    body,
-    codexInstructions,
-    userConfig,
-    codexMode,
-  );
+  const transformedBody = await transformRequestBody(body);
 
   // Build URL
   const url = `${CODEX_BASE_URL}/codex/responses`;

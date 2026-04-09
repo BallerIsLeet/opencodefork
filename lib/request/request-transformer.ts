@@ -1,10 +1,6 @@
 import { logDebug, logWarn } from "../logger.js";
-import { TOOL_REMAP_MESSAGE } from "../prompts/codex.js";
-import { CODEX_OPENCODE_BRIDGE } from "../prompts/codex-opencode-bridge.js";
-import { getOpenCodeCodexPrompt } from "../prompts/opencode-codex.js";
 import { getNormalizedModel } from "./helpers/model-map.js";
 import {
-	filterOpenCodeSystemPromptsWithCachedPrompt,
 	normalizeOrphanedToolOutputs,
 } from "./helpers/input-utils.js";
 import type {
@@ -14,11 +10,6 @@ import type {
 	RequestBody,
 	UserConfig,
 } from "../types.js";
-
-export {
-	isOpenCodeSystemPrompt,
-	filterOpenCodeSystemPromptsWithCachedPrompt,
-} from "./helpers/input-utils.js";
 
 /**
  * Normalize model name to Codex-supported variants
@@ -331,81 +322,6 @@ export function filterInput(
 }
 
 /**
- * Filter out OpenCode system prompts from input
- * Used in CODEX_MODE to replace OpenCode prompts with Codex-OpenCode bridge
- * @param input - Input array
- * @returns Input array without OpenCode system prompts
- */
-export async function filterOpenCodeSystemPrompts(
-	input: InputItem[] | undefined,
-): Promise<InputItem[] | undefined> {
-	if (!Array.isArray(input)) return input;
-
-	// Fetch cached OpenCode prompt for verification
-	let cachedPrompt: string | null = null;
-	try {
-		cachedPrompt = await getOpenCodeCodexPrompt();
-	} catch {
-		// If fetch fails, fallback to text-based detection only
-		// This is safe because we still have the "starts with" check
-	}
-
-	return filterOpenCodeSystemPromptsWithCachedPrompt(input, cachedPrompt);
-}
-
-/**
- * Add Codex-OpenCode bridge message to input if tools are present
- * @param input - Input array
- * @param hasTools - Whether tools are present in request
- * @returns Input array with bridge message prepended if needed
- */
-export function addCodexBridgeMessage(
-	input: InputItem[] | undefined,
-	hasTools: boolean,
-): InputItem[] | undefined {
-	if (!hasTools || !Array.isArray(input)) return input;
-
-	const bridgeMessage: InputItem = {
-		type: "message",
-		role: "developer",
-		content: [
-			{
-				type: "input_text",
-				text: CODEX_OPENCODE_BRIDGE,
-			},
-		],
-	};
-
-	return [bridgeMessage, ...input];
-}
-
-/**
- * Add tool remapping message to input if tools are present
- * @param input - Input array
- * @param hasTools - Whether tools are present in request
- * @returns Input array with tool remap message prepended if needed
- */
-export function addToolRemapMessage(
-	input: InputItem[] | undefined,
-	hasTools: boolean,
-): InputItem[] | undefined {
-	if (!hasTools || !Array.isArray(input)) return input;
-
-	const toolRemapMessage: InputItem = {
-		type: "message",
-		role: "developer",
-		content: [
-			{
-				type: "input_text",
-				text: TOOL_REMAP_MESSAGE,
-			},
-		],
-	};
-
-	return [toolRemapMessage, ...input];
-}
-
-/**
  * Transform request body for Codex API
  *
  * NOTE: Configuration follows Codex CLI patterns instead of opencode defaults:
@@ -421,19 +337,15 @@ export function addToolRemapMessage(
  */
 export async function transformRequestBody(
 	body: RequestBody,
-	codexInstructions: string,
 	userConfig: UserConfig = { global: {}, models: {} },
-	codexMode = true,
 ): Promise<RequestBody> {
 	const originalModel = body.model;
 	const normalizedModel = normalizeModel(body.model);
 
 	// Get model-specific configuration using ORIGINAL model name (config key)
-	// This allows per-model options like "gpt-5-codex-low" to work correctly
 	const lookupModel = originalModel || normalizedModel;
 	const modelConfig = getModelConfig(lookupModel, userConfig);
 
-	// Debug: Log which config was resolved
 	logDebug(
 		`Model config lookup: "${lookupModel}" → normalized to "${normalizedModel}" for API`,
 		{
@@ -446,17 +358,8 @@ export async function transformRequestBody(
 	body.model = normalizedModel;
 
 	// Codex required fields
-	// ChatGPT backend REQUIRES store=false (confirmed via testing)
 	body.store = false;
-	// Always set stream=true for API - response handling detects original intent
 	body.stream = true;
-	// Allow callers to pass their own instructions (e.g. PawCare pet-care prompt).
-	// Only inject Codex coding instructions when the caller didn't provide any.
-	const callerInstructions = body.instructions;
-	const usingCustomInstructions = typeof callerInstructions === 'string' && callerInstructions.length > 0;
-	if (!usingCustomInstructions) {
-		body.instructions = codexInstructions;
-	}
 
 	// Prompt caching relies on the host providing a stable prompt_cache_key
 	// (OpenCode passes its session identifier). We no longer synthesize one here.
@@ -487,18 +390,6 @@ export async function transformRequestBody(
 			);
 		} else if (originalIds.length > 0) {
 			logDebug(`Successfully removed all ${originalIds.length} message IDs`);
-		}
-
-		// Skip Codex bridge/remap prompts when using custom instructions
-		if (usingCustomInstructions) {
-			// Custom instructions mode — no bridge or remap needed
-		} else if (codexMode) {
-			// CODEX_MODE: Remove OpenCode system prompt, add bridge prompt
-			body.input = await filterOpenCodeSystemPrompts(body.input);
-			body.input = addCodexBridgeMessage(body.input, !!body.tools);
-		} else {
-			// DEFAULT MODE: Keep original behavior with tool remap message
-			body.input = addToolRemapMessage(body.input, !!body.tools);
 		}
 
 		// Handle orphaned function_call_output items (where function_call was an item_reference that got filtered)
