@@ -29,6 +29,8 @@
   },
   "scripts": {
     "build": "tsc && cp lib/oauth-success.html dist/lib/",
+    "build:server": "tsc -p tsconfig.server.json && cp lib/oauth-success.html dist/lib/",
+    "server": "node dist/server.js",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -61,6 +63,7 @@
     "vitest": "^3.2.4"
   },
   "dependencies": {
+    "@hono/node-server": "^1.13.8",
     "@openauthjs/openauth": "^0.4.3",
     "hono": "^4.10.4",
     "jsonc-parser": "^3.3.1"
