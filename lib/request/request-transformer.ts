@@ -450,7 +450,13 @@ export async function transformRequestBody(
 	body.store = false;
 	// Always set stream=true for API - response handling detects original intent
 	body.stream = true;
-	body.instructions = codexInstructions;
+	// Allow callers to pass their own instructions (e.g. PawCare pet-care prompt).
+	// Only inject Codex coding instructions when the caller didn't provide any.
+	const callerInstructions = body.instructions;
+	const usingCustomInstructions = typeof callerInstructions === 'string' && callerInstructions.length > 0;
+	if (!usingCustomInstructions) {
+		body.instructions = codexInstructions;
+	}
 
 	// Prompt caching relies on the host providing a stable prompt_cache_key
 	// (OpenCode passes its session identifier). We no longer synthesize one here.
@@ -483,7 +489,10 @@ export async function transformRequestBody(
 			logDebug(`Successfully removed all ${originalIds.length} message IDs`);
 		}
 
-		if (codexMode) {
+		// Skip Codex bridge/remap prompts when using custom instructions
+		if (usingCustomInstructions) {
+			// Custom instructions mode — no bridge or remap needed
+		} else if (codexMode) {
 			// CODEX_MODE: Remove OpenCode system prompt, add bridge prompt
 			body.input = await filterOpenCodeSystemPrompts(body.input);
 			body.input = addCodexBridgeMessage(body.input, !!body.tools);

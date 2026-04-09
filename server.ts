@@ -102,6 +102,17 @@ const app = new Hono();
 const pluginConfig = loadPluginConfig();
 const codexMode = getCodexMode(pluginConfig);
 
+// Request logging middleware
+app.use("*", async (c, next) => {
+  const start = Date.now();
+  const method = c.req.method;
+  const path = c.req.path;
+  console.log(`→ ${method} ${path}`);
+  await next();
+  const ms = Date.now() - start;
+  console.log(`← ${method} ${path} ${c.res.status} (${ms}ms)`);
+});
+
 app.get("/health", (c) => c.json({ status: "ok" }));
 
 app.post("/v1/responses", async (c) => {
@@ -109,6 +120,7 @@ app.post("/v1/responses", async (c) => {
   const body = (await c.req.json()) as RequestBody;
 
   const isStreaming = body.stream === true;
+  console.log(`  model: ${body.model} | stream: ${isStreaming} | tools: ${body.tools?.length ?? 0}`);
 
   // Normalize model and get instructions
   const normalizedModel = normalizeModel(body.model);
