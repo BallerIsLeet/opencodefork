@@ -8,12 +8,15 @@ import { logRequest, LOGGING_ENABLED } from "../logger.js";
 function parseSseStream(sseText: string): unknown | null {
 	const lines = sseText.split('\n');
 
-	// --- DIAGNOSTIC INSTRUMENTATION ---
-	// Walk the entire stream first so we can report what was actually emitted
-	// before deciding what to return. This is a debugging aid for the
-	// "output:[] but output_tokens > 0" case.
+	// --- DIAGNOSTIC INSTRUMENTATION (no behavior change) ---
+	// Walk the stream once to collect what's actually emitted, then dump enough
+	// of the function_call items to know whether their `arguments` field is
+	// already populated in `response.output_item.done` or whether we'd need to
+	// stitch together `response.function_call_arguments.delta` events.
 	const eventTypeCounts: Record<string, number> = {};
-	const collectedItems: any[] = [];
+	const doneItems: any[] = [];
+	const argumentDeltasByItem: Record<string, string> = {};
+	const argumentDoneByItem: Record<string, string> = {};
 	let finalResponse: any = null;
 
 	for (const line of lines) {
@@ -29,7 +32,17 @@ function parseSseStream(sseText: string): unknown | null {
 		eventTypeCounts[t] = (eventTypeCounts[t] ?? 0) + 1;
 
 		if (t === 'response.output_item.done' && data.item) {
-			collectedItems.push(data.item);
+			doneItems.push(data.item);
+		}
+
+		if (t === 'response.function_call_arguments.delta') {
+			const id = String(data?.item_id ?? data?.output_index ?? 'unknown');
+			argumentDeltasByItem[id] = (argumentDeltasByItem[id] ?? '') + (data?.delta ?? '');
+		}
+
+		if (t === 'response.function_call_arguments.done') {
+			const id = String(data?.item_id ?? data?.output_index ?? 'unknown');
+			argumentDoneByItem[id] = String(data?.arguments ?? '');
 		}
 
 		if (t === 'response.completed' || t === 'response.done') {
@@ -40,29 +53,36 @@ function parseSseStream(sseText: string): unknown | null {
 	const finalOutputLen = Array.isArray(finalResponse?.output)
 		? finalResponse.output.length
 		: -1;
-	const collectedSummary = collectedItems.map((it: any) => ({
-		type: it?.type,
-		name: it?.name,
-		hasContent: Array.isArray(it?.content) ? it.content.length : undefined,
-	}));
+
+	// Detailed dump of every collected item — for function_call items in
+	// particular we want to see whether `arguments` is populated.
+	const itemDump = doneItems.map((it: any) => {
+		const base: any = { type: it?.type, id: it?.id, name: it?.name };
+		if (it?.type === 'function_call') {
+			base.call_id = it?.call_id;
+			base.argumentsType = typeof it?.arguments;
+			base.argumentsLength =
+				typeof it?.arguments === 'string' ? it.arguments.length : undefined;
+			base.argumentsPreview =
+				typeof it?.arguments === 'string'
+					? it.arguments.slice(0, 200)
+					: undefined;
+		}
+		return base;
+	});
 
 	console.error(
 		'[openai-codex-plugin][parseSseStream] event types:',
 		JSON.stringify(eventTypeCounts),
 		'| final.output.length:',
 		finalOutputLen,
-		'| collected items from output_item.done:',
-		JSON.stringify(collectedSummary),
+		'| done items detail:',
+		JSON.stringify(itemDump),
+		'| function_call_arguments.delta accumulated:',
+		JSON.stringify(argumentDeltasByItem),
+		'| function_call_arguments.done:',
+		JSON.stringify(argumentDoneByItem),
 	);
-
-	// If the final response had no output items but the stream actually emitted
-	// some via response.output_item.done, dump them so we can see what they were.
-	if (finalOutputLen <= 0 && collectedItems.length > 0) {
-		console.error(
-			'[openai-codex-plugin][parseSseStream] WARNING: response.completed had empty output but stream contained items. First item:',
-			JSON.stringify(collectedItems[0]).slice(0, 1000),
-		);
-	}
 
 	return finalResponse ?? null;
 }
