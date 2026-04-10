@@ -8,15 +8,13 @@ import { logRequest, LOGGING_ENABLED } from "../logger.js";
 function parseSseStream(sseText: string): unknown | null {
 	const lines = sseText.split('\n');
 
-	// --- DIAGNOSTIC INSTRUMENTATION (no behavior change) ---
-	// Walk the stream once to collect what's actually emitted, then dump enough
-	// of the function_call items to know whether their `arguments` field is
-	// already populated in `response.output_item.done` or whether we'd need to
-	// stitch together `response.function_call_arguments.delta` events.
-	const eventTypeCounts: Record<string, number> = {};
+	// The Codex CLI subscription backend (chatgpt.com/backend-api/codex/responses)
+	// has a quirk: its terminal `response.completed` event frequently ships with
+	// an empty `output` array even though the stream actually emitted fully
+	// populated items (including reasoning + function_call with arguments) via
+	// `response.output_item.done`. Walk the stream once, collect the done items,
+	// and backfill `response.output` from them if the completed event is empty.
 	const doneItems: any[] = [];
-	const argumentDeltasByItem: Record<string, string> = {};
-	const argumentDoneByItem: Record<string, string> = {};
 	let finalResponse: any = null;
 
 	for (const line of lines) {
@@ -28,21 +26,11 @@ function parseSseStream(sseText: string): unknown | null {
 			continue;
 		}
 
-		const t = typeof data?.type === 'string' ? data.type : '<no-type>';
-		eventTypeCounts[t] = (eventTypeCounts[t] ?? 0) + 1;
+		const t = typeof data?.type === 'string' ? data.type : '';
 
 		if (t === 'response.output_item.done' && data.item) {
 			doneItems.push(data.item);
-		}
-
-		if (t === 'response.function_call_arguments.delta') {
-			const id = String(data?.item_id ?? data?.output_index ?? 'unknown');
-			argumentDeltasByItem[id] = (argumentDeltasByItem[id] ?? '') + (data?.delta ?? '');
-		}
-
-		if (t === 'response.function_call_arguments.done') {
-			const id = String(data?.item_id ?? data?.output_index ?? 'unknown');
-			argumentDoneByItem[id] = String(data?.arguments ?? '');
+			continue;
 		}
 
 		if (t === 'response.completed' || t === 'response.done') {
@@ -54,35 +42,25 @@ function parseSseStream(sseText: string): unknown | null {
 		? finalResponse.output.length
 		: -1;
 
-	// Detailed dump of every collected item — for function_call items in
-	// particular we want to see whether `arguments` is populated.
-	const itemDump = doneItems.map((it: any) => {
-		const base: any = { type: it?.type, id: it?.id, name: it?.name };
-		if (it?.type === 'function_call') {
-			base.call_id = it?.call_id;
-			base.argumentsType = typeof it?.arguments;
-			base.argumentsLength =
-				typeof it?.arguments === 'string' ? it.arguments.length : undefined;
-			base.argumentsPreview =
-				typeof it?.arguments === 'string'
-					? it.arguments.slice(0, 200)
-					: undefined;
-		}
-		return base;
-	});
+	if (finalResponse && finalOutputLen <= 0 && doneItems.length > 0) {
+		console.error(
+			'[openai-codex-plugin][parseSseStream] backfilling empty response.output with',
+			doneItems.length,
+			'items collected from output_item.done events',
+		);
+		finalResponse.output = doneItems;
+	}
 
-	console.error(
-		'[openai-codex-plugin][parseSseStream] event types:',
-		JSON.stringify(eventTypeCounts),
-		'| final.output.length:',
-		finalOutputLen,
-		'| done items detail:',
-		JSON.stringify(itemDump),
-		'| function_call_arguments.delta accumulated:',
-		JSON.stringify(argumentDeltasByItem),
-		'| function_call_arguments.done:',
-		JSON.stringify(argumentDoneByItem),
-	);
+	// Edge case: no `response.completed` event at all but the stream carried
+	// items — synthesize a minimal response so the caller still sees them.
+	if (!finalResponse && doneItems.length > 0) {
+		console.error(
+			'[openai-codex-plugin][parseSseStream] no response.completed event; synthesizing response from',
+			doneItems.length,
+			'collected items',
+		);
+		return { output: doneItems };
+	}
 
 	return finalResponse ?? null;
 }
