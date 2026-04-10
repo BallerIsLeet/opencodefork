@@ -1,5 +1,4 @@
 import { logRequest, LOGGING_ENABLED } from "../logger.js";
-import type { SSEEventData } from "../types.js";
 
 /**
  * Parse SSE stream to extract final response
@@ -9,22 +8,63 @@ import type { SSEEventData } from "../types.js";
 function parseSseStream(sseText: string): unknown | null {
 	const lines = sseText.split('\n');
 
-	for (const line of lines) {
-		if (line.startsWith('data: ')) {
-			try {
-				const data = JSON.parse(line.substring(6)) as SSEEventData;
+	// --- DIAGNOSTIC INSTRUMENTATION ---
+	// Walk the entire stream first so we can report what was actually emitted
+	// before deciding what to return. This is a debugging aid for the
+	// "output:[] but output_tokens > 0" case.
+	const eventTypeCounts: Record<string, number> = {};
+	const collectedItems: any[] = [];
+	let finalResponse: any = null;
 
-				// Look for response.done event with final data
-				if (data.type === 'response.done' || data.type === 'response.completed') {
-					return data.response;
-				}
-			} catch (e) {
-				// Skip malformed JSON
-			}
+	for (const line of lines) {
+		if (!line.startsWith('data: ')) continue;
+		let data: any;
+		try {
+			data = JSON.parse(line.substring(6));
+		} catch {
+			continue;
+		}
+
+		const t = typeof data?.type === 'string' ? data.type : '<no-type>';
+		eventTypeCounts[t] = (eventTypeCounts[t] ?? 0) + 1;
+
+		if (t === 'response.output_item.done' && data.item) {
+			collectedItems.push(data.item);
+		}
+
+		if (t === 'response.completed' || t === 'response.done') {
+			finalResponse = data.response ?? finalResponse;
 		}
 	}
 
-	return null;
+	const finalOutputLen = Array.isArray(finalResponse?.output)
+		? finalResponse.output.length
+		: -1;
+	const collectedSummary = collectedItems.map((it: any) => ({
+		type: it?.type,
+		name: it?.name,
+		hasContent: Array.isArray(it?.content) ? it.content.length : undefined,
+	}));
+
+	console.error(
+		'[openai-codex-plugin][parseSseStream] event types:',
+		JSON.stringify(eventTypeCounts),
+		'| final.output.length:',
+		finalOutputLen,
+		'| collected items from output_item.done:',
+		JSON.stringify(collectedSummary),
+	);
+
+	// If the final response had no output items but the stream actually emitted
+	// some via response.output_item.done, dump them so we can see what they were.
+	if (finalOutputLen <= 0 && collectedItems.length > 0) {
+		console.error(
+			'[openai-codex-plugin][parseSseStream] WARNING: response.completed had empty output but stream contained items. First item:',
+			JSON.stringify(collectedItems[0]).slice(0, 1000),
+		);
+	}
+
+	return finalResponse ?? null;
 }
 
 /**
