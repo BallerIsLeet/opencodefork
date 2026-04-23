@@ -63,6 +63,21 @@ Minimal configs are not supported for GPT‑5.x; use the full configs above.
 - Multimodal input enabled for all models
 - Usage‑aware errors + automatic token refresh
 ---
+## 🖼️ Image generation endpoint
+The proxy also exposes `POST /v1/images/generations` — a thin passthrough over `/v1/responses` that auto-injects Codex's built-in `image_generation` tool. Send any Responses-API body; the generated PNG arrives base64-encoded inside an `image_generation_call` item. Model must be image-capable (e.g. `gpt-5.2`); upstream rejects unsupported models.
+
+Streaming example:
+```bash
+curl -N -X POST http://localhost:8080/v1/images/generations \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gpt-5.2",
+    "stream": true,
+    "input": [{"role":"user","content":[{"type":"input_text","text":"a toasty sunrise over snowy mountains"}]}]
+  }'
+```
+Watch for an SSE event `response.output_item.done` whose `item.type == "image_generation_call"`; `item.result` is the base64 PNG.
+
 ## 📚 Docs
 - Getting Started: `docs/getting-started.md`
 - Configuration: `docs/configuration.md`

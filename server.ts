@@ -5,6 +5,7 @@ import { CODEX_BASE_URL, JWT_CLAIM_PATH, OPENAI_HEADERS, OPENAI_HEADER_VALUES } 
 import { transformRequestBody, normalizeModel } from "./lib/request/request-transformer.js";
 import { convertSseToJson, ensureContentType } from "./lib/request/response-handler.js";
 import { rewriteUrlForCodex, createCodexHeaders, handleErrorResponse, handleSuccessResponse } from "./lib/request/fetch-helpers.js";
+import { ensureImageGenerationTool } from "./lib/request/image-generation.js";
 import type { UserConfig, RequestBody } from "./lib/types.js";
 
 // --- Token state ---
@@ -110,12 +111,12 @@ app.use("*", async (c, next) => {
 
 app.get("/health", (c) => c.json({ status: "ok" }));
 
-app.post("/v1/responses", async (c) => {
+async function forwardToCodex(body: RequestBody): Promise<Response> {
   const token = await getValidToken();
-  const body = (await c.req.json()) as RequestBody;
 
   const isStreaming = body.stream === true;
-  console.log(`  model: ${body.model} | stream: ${isStreaming} | tools: ${body.tools?.length ?? 0}`);
+  const toolCount = Array.isArray(body.tools) ? (body.tools as unknown[]).length : 0;
+  console.log(`  model: ${body.model} | stream: ${isStreaming} | tools: ${toolCount}`);
 
   const transformedBody = await transformRequestBody(body);
 
@@ -165,11 +166,21 @@ app.post("/v1/responses", async (c) => {
     status: result.status,
     headers: Object.fromEntries(result.headers.entries()),
   });
+}
+
+app.post("/v1/responses", async (c) => {
+  const body = (await c.req.json()) as RequestBody;
+  return forwardToCodex(body);
+});
+
+app.post("/v1/images/generations", async (c) => {
+  const body = (await c.req.json()) as RequestBody;
+  return forwardToCodex(ensureImageGenerationTool(body));
 });
 
 const port = parseInt(process.env.PORT || "8080", 10);
 
 serve({ fetch: app.fetch, port }, (info) => {
   console.log(`Codex proxy server listening on http://0.0.0.0:${info.port}`);
-  console.log(`Endpoints: POST /v1/responses, GET /health`);
+  console.log(`Endpoints: POST /v1/responses, POST /v1/images/generations, GET /health`);
 });
